@@ -53,7 +53,7 @@ create table ZWEATHER(Z_PK integer primary key, ZCONDITION text, ZTEMPERATURE re
 create table ZENTRYVERDICT(Z_PK integer primary key, ZENTRYIDENTIFIER text, ZSUMMARY text);
 create table ZATTACHMENT(Z_PK integer primary key, Z_ENT integer, ZENTRY integer, ZIDENTIFIER text, ZORDER integer,
   ZDURATION real, ZTRANSCRIPTION text, ZWIDTH integer, ZHEIGHT integer, ZFILEEXTENSION text, ZNAME text,
-  ZTITLE text, ZLATITUDE real, ZLONGITUDE real);
+  ZTITLE text, ZLATITUDE real, ZLONGITUDE real, ZDATECREATED real);
 create table ZENTRY(Z_PK integer primary key, ZIDENTIFIER text, ZTEXT text, ZCONTENT text, ZDATE real,
   ZDATEMODIFIED real, ZJOURNAL integer, ZPLACE integer, ZWEATHER integer, ZISTRASHED integer,
   ZISBOOKMARKED integer, ZPINNED integer, ZWORDCOUNT integer, ZYEARMONTHDAYID integer,
@@ -106,11 +106,11 @@ def everlog_dir(tmp_path):
     db.executemany("insert into Z_17TAGS values(?,?)", [(1, 4), (2, 3), (5, 2), (4, 1), (1, 2)])
     # tag 4 'Marathon' under Running under Health -> entry1 gets Health/Running/Marathon and Health/Running
     db.executemany("insert into ZATTACHMENT(Z_PK,Z_ENT,ZENTRY,ZIDENTIFIER,ZORDER,ZDURATION,ZTRANSCRIPTION,ZWIDTH,"
-                   "ZHEIGHT,ZFILEEXTENSION,ZNAME) values(?,?,?,?,?,?,?,?,?,?,?)",
-                   [(1, 8, 1, A_IMG, 0, None, None, 8, 8, "png", None),
-                    (2, 6, 1, D_FIL, 1, None, None, None, None, "pdf", "report.pdf"),
-                    (3, 8, 3, B_IMG, 0, None, None, 64, 48, "png", None),
-                    (4, 3, 3, C_AUD, 1, 151.0, "whispered gelato", None, None, None, None)])
+                   "ZHEIGHT,ZFILEEXTENSION,ZNAME,ZDATECREATED) values(?,?,?,?,?,?,?,?,?,?,?,?)",
+                   [(1, 8, 1, A_IMG, 0, None, None, 8, 8, "png", None, cd(2024, 3, 15, 12, 5)),
+                    (2, 6, 1, D_FIL, 1, None, None, None, None, "pdf", "report.pdf", None),
+                    (3, 8, 3, B_IMG, 0, None, None, 64, 48, "png", None, None),
+                    (4, 3, 3, C_AUD, 1, 151.0, "whispered gelato", None, None, None, None, None)])
     db.commit()
     db.close()
 

@@ -8,6 +8,8 @@ import sys
 import threading
 import time
 from collections import defaultdict
+from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import date as _date, datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -112,6 +114,72 @@ create table entry_tag(pk integer, path text, path_lc text);
 create index entry_tag_pk on entry_tag(pk);
 create virtual table fts using fts5(text, tokenize='porter unicode61 remove_diacritics 2');
 """
+
+
+# ------------------------------------------------------------------ export API
+# Public, raw (no shaping/truncation/rounding) records for programmatic consumers such as exporters.
+@dataclass(frozen=True)
+class JournalInfo:
+    name: str
+    hidden: bool
+
+
+@dataclass(frozen=True)
+class AttachmentRecord:
+    identifier: str            # ZIDENTIFIER as stored (32 hex)
+    kind: str                  # "audio" | "file" | "image" | "video" | "other"
+    extension: str | None      # ZFILEEXTENSION as stored (no dot), may be None
+    name: str | None           # ZNAME
+    title: str | None          # ZTITLE
+    duration: float | None     # seconds
+    latitude: float | None     # raw, may be 0.0
+    longitude: float | None
+    created: datetime | None   # ZDATECREATED, tz-aware America/Denver
+    order: int | None          # ZORDER
+
+
+@dataclass(frozen=True)
+class PlaceRecord:
+    name: str | None
+    locality: str | None
+    administrative_area: str | None
+    country: str | None
+    timezone: str | None
+    latitude: float | None     # raw (encrypted column preferred when truthy), may be 0.0
+    longitude: float | None
+
+
+@dataclass(frozen=True)
+class WeatherRecord:
+    condition: str | None
+    temperature_c: float | None
+    humidity: float | None     # raw 0-1; 0.0 means no data
+    pressure_pa: float | None  # raw Pa
+    wind_speed: float | None
+    uv_index: int | None
+
+
+@dataclass(frozen=True)
+class EntryRecord:
+    id: str                    # ZIDENTIFIER
+    created: datetime          # exact ZDATE, tz-aware America/Denver (None-date rows get the epoch)
+    modified: datetime | None
+    journal: str
+    text: str                  # raw markdown; ![attachment](<32-hex>) references intact
+    tags: list[str]            # raw "Parent/Child" paths, sorted
+    place: PlaceRecord | None
+    latitude: float | None     # entry's own coordinates, raw, may be 0.0
+    longitude: float | None
+    weather: WeatherRecord | None
+    bookmarked: bool
+    pinned: bool
+    word_count: int
+    year_month_day_id: int     # ZYEARMONTHDAYID as stored (0 if NULL)
+    attachments: list[AttachmentRecord]
+
+
+def _col(row, name):
+    return row[name] if row is not None and name in row.keys() else None
 
 
 class EverlogStore:
@@ -450,7 +518,53 @@ class EverlogStore:
             return path.read_bytes() if path.exists() else None
         return None
 
-    def attachment_jpeg(self, attachment_id: str, max_size: int = DEFAULT_MAX_PX) -> bytes:
+    # ------------------------------------------------------------- export API
+    def journal_infos(self) -> list[JournalInfo]:
+        """All journals (name, hidden flag), ordered by primary key."""
+        with self.lock:
+            self.ensure_fresh()
+            return [JournalInfo(n, self.journal_hidden.get(pk, False)) for pk, n in self.journals.items()]
+
+    def iter_entries(self) -> Iterator[EntryRecord]:
+        """Every non-trashed entry, chronological (ZDATE, then primary key), as raw EntryRecords."""
+        with self.lock:
+            self.ensure_fresh()
+            tags = defaultdict(list)
+            for r in self.mem.execute("select pk, path from entry_tag order by path"):
+                tags[r["pk"]].append(r["path"])
+            atts = defaultdict(list)
+            for a in self.db.execute("select * from ZATTACHMENT order by ZENTRY, ZORDER, Z_PK"):
+                atts[a["ZENTRY"]].append(a)
+            places = {r["Z_PK"]: r for r in self.db.execute("select * from ZPLACE")}
+            weathers = {r["Z_PK"]: r for r in self.db.execute("select * from ZWEATHER")}
+            rows = self.db.execute("select * from ZENTRY where coalesce(ZISTRASHED,0)=0 "
+                                   "order by ZDATE, Z_PK").fetchall()
+            journals = dict(self.journals)
+        for r in rows:
+            yield EntryRecord(
+                id=r["ZIDENTIFIER"] or "",
+                created=_local_dt(r["ZDATE"] or 0),
+                modified=_local_dt(r["ZDATEMODIFIED"]),
+                journal=journals.get(r["ZJOURNAL"], "Unfiled"),
+                text=r["ZTEXT"] or "",
+                tags=tags.get(r["Z_PK"], []),
+                place=_place_record(places.get(r["ZPLACE"])),
+                latitude=r["ZENCRYPTEDLATITUDE"] or r["ZLATITUDE"],
+                longitude=r["ZENCRYPTEDLONGITUDE"] or r["ZLONGITUDE"],
+                weather=_weather_record(weathers.get(r["ZWEATHER"])),
+                bookmarked=bool(r["ZISBOOKMARKED"]),
+                pinned=bool(r["ZPINNED"]),
+                word_count=r["ZWORDCOUNT"] or 0,
+                year_month_day_id=r["ZYEARMONTHDAYID"] or 0,
+                attachments=[_attachment_record(a) for a in atts.get(r["Z_PK"], [])],
+            )
+
+    def attachment_bytes(self, identifier: str) -> bytes | None:
+        """Raw attachment bytes (largest decoded copy if several rows share the identifier), or None."""
+        with self.lock:
+            return self._attachment_bytes(identifier)
+
+    def _image_bytes(self, attachment_id: str) -> bytes:
         with self.lock:
             a = self._find_attachment(attachment_id)
             if a["Z_ENT"] != ENT_IMAGE:
@@ -459,7 +573,14 @@ class EverlogStore:
             data = self._attachment_bytes(a["ZIDENTIFIER"])
         if data is None:
             raise EverlogError(f"Image bytes for attachment {attachment_id!r} are missing from the Everlog store.")
-        return to_jpeg(data, max_size)
+        return data
+
+    def attachment_original(self, attachment_id: str) -> bytes:
+        """Original, unmodified bytes of an image attachment (id or unambiguous 8+ hex prefix)."""
+        return self._image_bytes(attachment_id)
+
+    def attachment_jpeg(self, attachment_id: str, max_size: int = DEFAULT_MAX_PX) -> bytes:
+        return to_jpeg(self._image_bytes(attachment_id), max_size)
 
 
 def _build_location(place):
@@ -503,3 +624,33 @@ def _attachment_info(a):
     if a["ZTRANSCRIPTION"]:
         info["transcription"] = a["ZTRANSCRIPTION"]
     return info
+
+
+def _local_dt(ts) -> datetime | None:
+    d = from_coredata(ts)
+    return d.astimezone(TZ) if d else None
+
+
+def _place_record(p) -> PlaceRecord | None:
+    if p is None:
+        return None
+    return PlaceRecord(
+        name=p["ZENCRYPTEDNAME"] or p["ZNAME"], locality=p["ZENCRYPTEDLOCALITY"] or p["ZLOCALITY"],
+        administrative_area=p["ZENCRYPTEDADMINISTRATIVEAREA"] or p["ZADMINISTRATIVEAREA"],
+        country=p["ZENCRYPTEDCOUNTRY"] or p["ZCOUNTRY"], timezone=p["ZENCRYPTEDTIMEZONE"] or p["ZTIMEZONE"],
+        latitude=p["ZENCRYPTEDLATITUDE"] or p["ZLATITUDE"], longitude=p["ZENCRYPTEDLONGITUDE"] or p["ZLONGITUDE"])
+
+
+def _weather_record(w) -> WeatherRecord | None:
+    if w is None:
+        return None
+    return WeatherRecord(condition=w["ZCONDITION"], temperature_c=w["ZTEMPERATURE"], humidity=w["ZHUMIDITY"],
+                         pressure_pa=w["ZPRESSURE"], wind_speed=w["ZWINDSPEED"], uv_index=w["ZUVINDEX"])
+
+
+def _attachment_record(a) -> AttachmentRecord:
+    return AttachmentRecord(
+        identifier=a["ZIDENTIFIER"] or "", kind=ENT_NAMES.get(a["Z_ENT"], "other"),
+        extension=a["ZFILEEXTENSION"], name=a["ZNAME"], title=a["ZTITLE"], duration=a["ZDURATION"],
+        latitude=a["ZLATITUDE"], longitude=a["ZLONGITUDE"], created=_local_dt(_col(a, "ZDATECREATED")),
+        order=a["ZORDER"])

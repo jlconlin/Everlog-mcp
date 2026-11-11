@@ -8,7 +8,7 @@ from mcp.server.mcpserver import Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 
-from .images import DEFAULT_MAX_PX, ImageError
+from .images import DEFAULT_MAX_PX, ImageError, sniff_format
 from .store import EverlogError, EverlogStore, default_dir
 
 INSTRUCTIONS = """Read-only access to the user's private Everlog journal (macOS journaling app).
@@ -113,11 +113,21 @@ def get_entry(entry_id: str, include_images: bool = False, max_images: int = 4):
 
 
 @_tool
-def get_attachment_image(attachment_id: str, max_size: int = DEFAULT_MAX_PX):
-    """Return an image attachment as JPEG, shrunk so its longest side is at most max_size pixels
-    (default 1568). attachment_id is the id from get_entry's attachments list (the 8-char prefix in
-    placeholders also works if unambiguous). Errors if the attachment is not an image or its bytes are missing."""
-    return Image(data=get_store().attachment_jpeg(attachment_id, max_size), format="jpeg")
+def get_attachment_image(attachment_id: str, format: Literal["jpeg", "original"] = "jpeg",
+                         max_size: int = DEFAULT_MAX_PX):
+    """Return an image attachment. attachment_id is the id from get_entry's attachments list (the 8-char
+    prefix in placeholders also works if unambiguous). Errors if the attachment is not an image or its
+    bytes are missing.
+
+    format: "jpeg" (default) re-encodes to JPEG, shrunk so its longest side is at most max_size pixels;
+      works for HEIC and is much cheaper in tokens. "original" returns the untouched stored bytes in their
+      real format (PNG, JPEG, HEIC, ...), full size; some clients/models cannot display HEIC.
+    max_size: pixels, default 1568; applies to format="jpeg" only and is ignored for "original"."""
+    store = get_store()
+    if format == "original":
+        data = store.attachment_original(attachment_id)
+        return Image(data=data, format=sniff_format(data))
+    return Image(data=store.attachment_jpeg(attachment_id, max_size), format="jpeg")
 
 
 @_tool

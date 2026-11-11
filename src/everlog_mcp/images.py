@@ -49,3 +49,20 @@ def to_jpeg(data: bytes, max_px: int = DEFAULT_MAX_PX, quality: int = 80) -> byt
         if r.returncode != 0 or not dst.exists():
             raise ImageError("image conversion failed")
         return dst.read_bytes()
+
+
+def sniff_format(data: bytes) -> str:
+    """Image format name for ``Image(format=...)`` (-> ``image/<name>``), from magic bytes."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpeg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    if data[4:8] == b"ftyp" and data[8:12] in (b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1"):
+        return "heic"
+    if data[:4] in (b"II*\x00", b"MM\x00*"):
+        return "tiff"
+    return "octet-stream"

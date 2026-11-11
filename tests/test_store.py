@@ -1,9 +1,12 @@
+import os
 import sqlite3
 import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
-from conftest import A_IMG, B_IMG, C_AUD, D_FIL, ENTRY_IDS, add_entry
+from conftest import A_IMG, B_IMG, C_AUD, D_FIL, ENTRY_IDS, add_entry, make_png
 from everlog_mcp.store import EverlogError, EverlogStore
 
 
@@ -162,8 +165,22 @@ def test_image_inline_and_external_and_resize(store, tmp_path):
     assert max(png_dims(tmp_path / "c.jpg")) == 32
 
 
+def test_attachment_original_is_unmodified(store):
+    assert store.attachment_original(A_IMG) == make_png(8, 8)
+    assert store.attachment_original(B_IMG[:8].upper()) == make_png(64, 48)
+
+
+def test_sniff_format():
+    from everlog_mcp.images import sniff_format
+    assert sniff_format(make_png(2, 2)) == "png"
+    assert sniff_format(b"\xff\xd8\xff\xe0xxxx") == "jpeg"
+    assert sniff_format(b"\x00\x00\x00\x18ftypheic....") == "heic"
+    assert sniff_format(b"???") == "octet-stream"
+
+
 def test_image_errors(store, everlog_dir):
     with pytest.raises(EverlogError, match="not an image"):
+        store.attachment_original(C_AUD)
         store.attachment_jpeg(C_AUD)
     with pytest.raises(EverlogError, match="not an image"):
         store.attachment_jpeg(D_FIL)
@@ -194,3 +211,59 @@ def test_data_version_rebuild(store, everlog_dir):
 def test_store_is_read_only(store):
     with pytest.raises(sqlite3.OperationalError):
         store.db.execute("delete from ZENTRY")
+
+
+# ------------------------------------------------------------------ public export API
+def test_import_without_mcp_or_server():
+    code = ("import sys; sys.modules['mcp'] = None; import everlog_mcp.store as s; "
+            "assert 'everlog_mcp.server' not in sys.modules; s.EverlogStore")
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                       env={**os.environ, "PYTHONPATH": str(Path(__file__).parent.parent / "src")})
+    assert r.returncode == 0, r.stderr
+
+
+def test_iter_entries_order_and_trash(store):
+    recs = list(store.iter_entries())
+    assert [r.id for r in recs] == [ENTRY_IDS[5], ENTRY_IDS[3], ENTRY_IDS[2], ENTRY_IDS[1]]  # chronological, no trashed
+
+
+def test_iter_entries_entry1_fields(store):
+    e = next(r for r in store.iter_entries() if r.id == ENTRY_IDS[1])
+    assert e.created.isoformat() == "2024-03-15T12:00:00-06:00"
+    assert e.modified.isoformat() == "2024-03-15T13:00:00-06:00"
+    assert e.journal == "Daily Journal"
+    assert f"![attachment]({A_IMG.upper()})" in e.text and f"![attachment]({D_FIL})" in e.text
+    assert e.tags == ["Health/Running", "Health/Running/Marathon"]
+    assert (e.bookmarked, e.pinned, e.word_count, e.year_month_day_id) == (True, True, e.word_count, 20240315)
+    p = e.place
+    assert (p.name, p.locality, p.administrative_area, p.country, p.timezone) == \
+        ("Riverside Park", "Testville", "TS", "Testland", "America/Denver")
+    assert (p.latitude, p.longitude) == (12.5, -45.25)
+    w = e.weather
+    assert (w.condition, w.temperature_c, w.humidity, w.pressure_pa, w.wind_speed, w.uv_index) == \
+        ("Clear", 21.46, 0.5, 101325, 3.2, 4)
+    assert [a.identifier for a in e.attachments] == [A_IMG, D_FIL]
+    img, fil = e.attachments
+    assert (img.kind, img.extension, img.order) == ("image", "png", 0)
+    assert img.created.isoformat() == "2024-03-15T12:05:00-06:00"
+    assert (fil.kind, fil.extension, fil.name, fil.created) == ("file", "pdf", "report.pdf", None)
+
+
+def test_iter_entries_entry3_coords_and_audio(store):
+    e = next(r for r in store.iter_entries() if r.id == ENTRY_IDS[3])
+    assert (e.latitude, e.longitude, e.place, e.weather) == (40.0, -105.0, None, None)
+    aud = next(a for a in e.attachments if a.identifier == C_AUD)
+    assert (aud.kind, aud.duration) == ("audio", 151.0)
+
+
+def test_journal_infos(store):
+    assert {(j.name, j.hidden) for j in store.journal_infos()} == \
+        {("Daily Journal", False), ("Travel", False), ("Secret", True)}
+
+
+def test_attachment_bytes_public(store):
+    inline = store.attachment_bytes(A_IMG)
+    assert inline == make_png(8, 8)                      # larger duplicate row wins, raw bytes
+    assert store.attachment_bytes(B_IMG) == make_png(64, 48)  # external file blob
+    assert store.attachment_bytes(D_FIL) is None         # no data row
+    assert store.attachment_bytes("f" * 32) is None
