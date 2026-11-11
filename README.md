@@ -65,3 +65,7 @@ Whatever the tools return (entry text, summaries, photos, locations) is sent to 
 - Attachments are referenced in text as `![attachment](<32-hex id>)`. Blob bytes in `ZATTACHMENTDATA.ZDATA` start with `0x01` (inline bytes) or `0x02` (ASCII UUID of a file under `.AttachmentData_SUPPORT/_EXTERNAL_DATA/`). When several rows share an identifier the largest payload is used.
 - Images are converted to JPEG (quality 80, longest side <= 1568 px by default) with macOS `/usr/bin/sips`, which also handles HEIC.
 - Weather: temperature in deg C, pressure converted from Pa to hPa, humidity 0 means "no data".
+
+## License
+
+[MIT](LICENSE)
