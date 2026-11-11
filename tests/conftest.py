@@ -49,7 +49,7 @@ create table ZPLACE(Z_PK integer primary key, ZNAME text, ZENCRYPTEDNAME text, Z
   ZLATITUDE real, ZLONGITUDE real, ZENCRYPTEDLATITUDE real, ZENCRYPTEDLONGITUDE real,
   ZTIMEZONE text, ZENCRYPTEDTIMEZONE text);
 create table ZWEATHER(Z_PK integer primary key, ZCONDITION text, ZTEMPERATURE real, ZHUMIDITY real,
-  ZPRESSURE real, ZWINDSPEED real, ZUVINDEX integer);
+  ZPRESSURE real, ZWINDSPEED real, ZUVINDEX integer, ZWINDDIRECTION real);
 create table ZENTRYVERDICT(Z_PK integer primary key, ZENTRYIDENTIFIER text, ZSUMMARY text);
 create table ZATTACHMENT(Z_PK integer primary key, Z_ENT integer, ZENTRY integer, ZIDENTIFIER text, ZORDER integer,
   ZDURATION real, ZTRANSCRIPTION text, ZWIDTH integer, ZHEIGHT integer, ZFILEEXTENSION text, ZNAME text,
@@ -92,7 +92,7 @@ def everlog_dir(tmp_path):
                "ZCOUNTRY,ZENCRYPTEDCOUNTRY,ZLATITUDE,ZLONGITUDE,ZENCRYPTEDLATITUDE,ZENCRYPTEDLONGITUDE,"
                "ZTIMEZONE,ZENCRYPTEDTIMEZONE) values(1,'old name','Riverside Park','Testville',NULL,'TS',"
                "'Testland',NULL,0,0,12.5,-45.25,NULL,'America/Denver')")
-    db.execute("insert into ZWEATHER values(1,'Clear',21.46,0.5,101325,3.2,4)")
+    db.execute("insert into ZWEATHER values(1,'Clear',21.46,0.5,101325,3.2,4,270.0)")
     db.execute("insert into ZENTRYVERDICT values(1,?,?)", (ENTRY_IDS[1], "Synthetic AI summary."))
 
     add_entry(db, 1, "# Morning run\n\nI went running along the river.\n\n"

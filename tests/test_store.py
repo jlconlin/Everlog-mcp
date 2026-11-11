@@ -240,8 +240,8 @@ def test_iter_entries_entry1_fields(store):
         ("Riverside Park", "Testville", "TS", "Testland", "America/Denver")
     assert (p.latitude, p.longitude) == (12.5, -45.25)
     w = e.weather
-    assert (w.condition, w.temperature_c, w.humidity, w.pressure_pa, w.wind_speed, w.uv_index) == \
-        ("Clear", 21.46, 0.5, 101325, 3.2, 4)
+    assert (w.condition, w.temperature_c, w.humidity, w.pressure_pa, w.wind_speed, w.wind_direction, w.uv_index) == \
+        ("Clear", 21.46, 0.5, 101325, 3.2, 270.0, 4)
     assert [a.identifier for a in e.attachments] == [A_IMG, D_FIL]
     img, fil = e.attachments
     assert (img.kind, img.extension, img.order) == ("image", "png", 0)

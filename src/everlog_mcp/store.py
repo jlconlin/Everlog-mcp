@@ -156,6 +156,7 @@ class WeatherRecord:
     humidity: float | None     # raw 0-1; 0.0 means no data
     pressure_pa: float | None  # raw Pa
     wind_speed: float | None
+    wind_direction: float | None  # raw ZWINDDIRECTION, degrees
     uv_index: int | None
 
 
@@ -645,7 +646,7 @@ def _weather_record(w) -> WeatherRecord | None:
     if w is None:
         return None
     return WeatherRecord(condition=w["ZCONDITION"], temperature_c=w["ZTEMPERATURE"], humidity=w["ZHUMIDITY"],
-                         pressure_pa=w["ZPRESSURE"], wind_speed=w["ZWINDSPEED"], uv_index=w["ZUVINDEX"])
+                         pressure_pa=w["ZPRESSURE"], wind_speed=w["ZWINDSPEED"], wind_direction=_col(w, "ZWINDDIRECTION"), uv_index=w["ZUVINDEX"])
 
 
 def _attachment_record(a) -> AttachmentRecord:
