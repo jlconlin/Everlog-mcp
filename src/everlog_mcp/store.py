@@ -10,18 +10,36 @@ import time
 from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import date as _date, datetime, timezone
+from datetime import date as _date, datetime, timezone, tzinfo
 from pathlib import Path
 from urllib.parse import quote
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .images import DEFAULT_MAX_PX, to_jpeg
 
 DEFAULT_DIR = Path.home() / "Library/Group Containers/group.hummingbird"
-TZ = ZoneInfo("America/Denver")
 COREDATA_EPOCH = 978307200
-ENT_AUDIO, ENT_FILE, ENT_IMAGE, ENT_VIDEO = 3, 6, 8, 13
-ENT_NAMES = {ENT_AUDIO: "audio", ENT_FILE: "file", ENT_IMAGE: "image", ENT_VIDEO: "video"}
+# Core Data numbers entities (Z_ENT, Z_<n>TAGS table names, ...) by their position in the data model, so the numbers
+# shift when an Everlog update adds an entity. Resolve them by name from Z_PRIMARYKEY instead of hard-coding them.
+ATTACHMENT_ENTITY_KINDS = {"AudioAttachment": "audio", "FileAttachment": "file",
+                           "ImageAttachment": "image", "VideoAttachment": "video"}
+
+
+def _local_zone() -> ZoneInfo | tzinfo:
+    """Timezone used for displayed times and "today": $EVERLOG_TZ, else the system timezone."""
+    name = os.environ.get("EVERLOG_TZ")
+    if name:
+        try:
+            return ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError):
+            log(f"ignoring EVERLOG_TZ={name!r}: not a valid IANA timezone name")
+    m = re.search(r"zoneinfo/(.+)$", os.path.realpath("/etc/localtime"))
+    if m:
+        try:
+            return ZoneInfo(m.group(1))
+        except (ZoneInfoNotFoundError, ValueError):
+            pass
+    return datetime.now().astimezone().tzinfo or timezone.utc
 ATTACHMENT_RE = re.compile(r"!\[[^\]]*\]\(([0-9A-Fa-f]{32})\)")
 
 
@@ -31,6 +49,9 @@ class EverlogError(Exception):
 
 def log(msg: str) -> None:
     print(f"[everlog-mcp] {msg}", file=sys.stderr, flush=True)
+
+
+TZ = _local_zone()
 
 
 def default_dir() -> Path:
@@ -134,7 +155,7 @@ class AttachmentRecord:
     duration: float | None     # seconds
     latitude: float | None     # raw, may be 0.0
     longitude: float | None
-    created: datetime | None   # ZDATECREATED, tz-aware America/Denver
+    created: datetime | None   # ZDATECREATED, tz-aware, local timezone (EVERLOG_TZ)
     order: int | None          # ZORDER
 
 
@@ -163,7 +184,7 @@ class WeatherRecord:
 @dataclass(frozen=True)
 class EntryRecord:
     id: str                    # ZIDENTIFIER
-    created: datetime          # exact ZDATE, tz-aware America/Denver (None-date rows get the epoch)
+    created: datetime          # exact ZDATE, tz-aware, local timezone (EVERLOG_TZ) (None-date rows get the epoch)
     modified: datetime | None
     journal: str
     text: str                  # raw markdown; ![attachment](<32-hex>) references intact
@@ -181,6 +202,27 @@ class EntryRecord:
 
 def _col(row, name):
     return row[name] if row is not None and name in row.keys() else None
+
+
+def resolve_schema(db: sqlite3.Connection) -> dict:
+    """Look up the model-dependent Core Data names: attachment Z_ENT -> kind, and the entry<->tag join table."""
+    try:
+        ents = {r["Z_NAME"]: r["Z_ENT"] for r in db.execute("select Z_NAME, Z_ENT from Z_PRIMARYKEY")}
+    except sqlite3.Error as e:
+        raise EverlogError(f"Everlog database has no readable Z_PRIMARYKEY table ({e}); unsupported schema.") from e
+    kinds = {ents[name]: kind for name, kind in ATTACHMENT_ENTITY_KINDS.items() if name in ents}
+    image_ent = next((ent for ent, kind in kinds.items() if kind == "image"), None)
+    if "Entry" not in ents or "Tag" not in ents:
+        raise EverlogError("Everlog database has no Entry/Tag entities in Z_PRIMARYKEY; unsupported schema.")
+    entry_prefix, tag_col = f"Z_{ents['Entry']}", f"Z_{ents['Tag']}TAGS"
+    tables = [r[0] for r in db.execute("select name from sqlite_master where type='table' and name glob 'Z_[0-9]*TAGS'")]
+    for table in tables:
+        cols = [r["name"] for r in db.execute(f'pragma table_info("{table}")')]
+        others = [c for c in cols if c != tag_col and c.startswith(entry_prefix)]
+        if tag_col in cols and len(cols) == 2 and len(others) == 1:
+            return {"attachment_kinds": kinds, "image_ent": image_ent,
+                    "tag_join": (table, others[0], tag_col)}
+    raise EverlogError("Could not find the entry-to-tag join table in the Everlog database; unsupported schema.")
 
 
 class EverlogStore:
@@ -201,6 +243,8 @@ class EverlogStore:
             raise EverlogError(
                 f"Could not open Everlog database at {main} read-only ({e}). On macOS the MCP host app may "
                 "need Full Disk Access / 'access data from other apps' permission; EVERLOG_DIR overrides the path.") from e
+        self.schema = resolve_schema(self.db)
+        self.kinds: dict[int, str] = self.schema["attachment_kinds"]
         self.lock = threading.RLock()
         self.mem: sqlite3.Connection | None = None
         self._version: int | None = None
@@ -266,7 +310,8 @@ class EverlogStore:
             mem.executemany("insert into fts(rowid, text) values(?,?)", fts_rows)
             live = {m[0] for m in meta_rows}
             seen, tag_rows_out = set(), []
-            for r in db.execute("select Z_17ENTRIES1 e, Z_25TAGS t from Z_17TAGS"):
+            join, entry_col, tag_col = self.schema["tag_join"]
+            for r in db.execute(f'select "{entry_col}" e, "{tag_col}" t from "{join}"'):
                 name = tag_names.get(r["t"])
                 if name and r["e"] in live and (r["e"], name) not in seen:
                     seen.add((r["e"], name))
@@ -450,7 +495,7 @@ class EverlogStore:
                 short = mo.group(1)[:8].lower()
                 if a is None:
                     return f"[attachment {short} (missing)]"
-                kind = ENT_NAMES.get(a["Z_ENT"], "attachment")
+                kind = self.kinds.get(a["Z_ENT"], "attachment")
                 if kind == "file":
                     return f"[file {a['ZNAME'] or a['ZTITLE'] or short}]"
                 dur = f" {fmt_duration(a['ZDURATION'])}" if kind == "audio" and a["ZDURATION"] else ""
@@ -479,7 +524,7 @@ class EverlogStore:
                 "bookmarked": bool(row["ZISBOOKMARKED"]), "pinned": bool(row["ZPINNED"]),
                 "word_count": row["ZWORDCOUNT"],
                 "summary": (verdict["ZSUMMARY"] if verdict and verdict["ZSUMMARY"] else None),
-                "attachments": [_attachment_info(a) for a in atts],
+                "attachments": [_attachment_info(a, self.kinds) for a in atts],
                 "text": text,
             }
 
@@ -557,7 +602,7 @@ class EverlogStore:
                 pinned=bool(r["ZPINNED"]),
                 word_count=r["ZWORDCOUNT"] or 0,
                 year_month_day_id=r["ZYEARMONTHDAYID"] or 0,
-                attachments=[_attachment_record(a) for a in atts.get(r["Z_PK"], [])],
+                attachments=[_attachment_record(a, self.kinds) for a in atts.get(r["Z_PK"], [])],
             )
 
     def attachment_bytes(self, identifier: str) -> bytes | None:
@@ -568,8 +613,8 @@ class EverlogStore:
     def _image_bytes(self, attachment_id: str) -> bytes:
         with self.lock:
             a = self._find_attachment(attachment_id)
-            if a["Z_ENT"] != ENT_IMAGE:
-                kind = ENT_NAMES.get(a["Z_ENT"], "non-image")
+            if a["Z_ENT"] != self.schema["image_ent"]:
+                kind = self.kinds.get(a["Z_ENT"], "non-image")
                 raise EverlogError(f"Attachment {attachment_id!r} is a {kind} attachment, not an image.")
             data = self._attachment_bytes(a["ZIDENTIFIER"])
         if data is None:
@@ -612,8 +657,8 @@ def _weather_fields(w):
     return {k: v for k, v in f.items() if v is not None}
 
 
-def _attachment_info(a):
-    kind = ENT_NAMES.get(a["Z_ENT"], "other")
+def _attachment_info(a, kinds):
+    kind = kinds.get(a["Z_ENT"], "other")
     info = {"attachment_id": a["ZIDENTIFIER"], "type": kind}
     if kind in ("image", "video") and a["ZWIDTH"] and a["ZHEIGHT"]:
         info["width"], info["height"] = a["ZWIDTH"], a["ZHEIGHT"]
@@ -649,9 +694,9 @@ def _weather_record(w) -> WeatherRecord | None:
                          pressure_pa=w["ZPRESSURE"], wind_speed=w["ZWINDSPEED"], wind_direction=_col(w, "ZWINDDIRECTION"), uv_index=w["ZUVINDEX"])
 
 
-def _attachment_record(a) -> AttachmentRecord:
+def _attachment_record(a, kinds) -> AttachmentRecord:
     return AttachmentRecord(
-        identifier=a["ZIDENTIFIER"] or "", kind=ENT_NAMES.get(a["Z_ENT"], "other"),
+        identifier=a["ZIDENTIFIER"] or "", kind=kinds.get(a["Z_ENT"], "other"),
         extension=a["ZFILEEXTENSION"], name=a["ZNAME"], title=a["ZTITLE"], duration=a["ZDURATION"],
         latitude=a["ZLATITUDE"], longitude=a["ZLONGITUDE"], created=_local_dt(_col(a, "ZDATECREATED")),
         order=a["ZORDER"])

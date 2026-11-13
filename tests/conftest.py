@@ -1,4 +1,5 @@
 """Synthetic Everlog data directory (Core Data naming) for tests. No real journal content."""
+import os
 import sqlite3
 import struct
 import zlib
@@ -6,6 +7,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
+
+os.environ["EVERLOG_TZ"] = "America/Denver"  # must be set before everlog_mcp.store is imported
 
 from everlog_mcp.store import COREDATA_EPOCH, EverlogStore
 
@@ -43,6 +46,7 @@ def cd(y, m, d, hh=12, mm=0) -> float:
 MAIN_SCHEMA = """
 create table ZJOURNAL(Z_PK integer primary key, ZNAME text, ZENCRYPTEDNAME text, ZISHIDDEN integer);
 create table ZTAG(Z_PK integer primary key, ZTITLE text, ZENCRYPTEDTITLE text, ZPARENT integer);
+create table Z_PRIMARYKEY(Z_ENT integer primary key, Z_NAME text);
 create table Z_17TAGS(Z_17ENTRIES1 integer, Z_25TAGS integer);
 create table ZPLACE(Z_PK integer primary key, ZNAME text, ZENCRYPTEDNAME text, ZLOCALITY text, ZENCRYPTEDLOCALITY text,
   ZADMINISTRATIVEAREA text, ZENCRYPTEDADMINISTRATIVEAREA text, ZCOUNTRY text, ZENCRYPTEDCOUNTRY text,
@@ -103,6 +107,9 @@ def everlog_dir(tmp_path):
               2022, 3, 15, journal=2, lat=40.0, lon=-105.0)
     add_entry(db, 4, "trashed zebra content", 2024, 5, 1, journal=1, trashed=1)
     add_entry(db, 5, "running running running and more running", 2021, 7, 4, journal=3)
+    db.executemany("insert into Z_PRIMARYKEY values(?,?)", [
+        (3, "AudioAttachment"), (6, "FileAttachment"), (8, "ImageAttachment"), (13, "VideoAttachment"),
+        (17, "Entry"), (25, "Tag")])
     db.executemany("insert into Z_17TAGS values(?,?)", [(1, 4), (2, 3), (5, 2), (4, 1), (1, 2)])
     # tag 4 'Marathon' under Running under Health -> entry1 gets Health/Running/Marathon and Health/Running
     db.executemany("insert into ZATTACHMENT(Z_PK,Z_ENT,ZENTRY,ZIDENTIFIER,ZORDER,ZDURATION,ZTRANSCRIPTION,ZWIDTH,"

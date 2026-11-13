@@ -267,3 +267,39 @@ def test_attachment_bytes_public(store):
     assert store.attachment_bytes(B_IMG) == make_png(64, 48)  # external file blob
     assert store.attachment_bytes(D_FIL) is None         # no data row
     assert store.attachment_bytes("f" * 32) is None
+
+
+def test_survives_entity_renumbering(everlog_dir):
+    """An Everlog update that adds entities shifts Z_ENT / Z_<n>TAGS numbering; lookups must follow by name."""
+    baseline = EverlogStore(everlog_dir)
+    expected_tags = {e["entry_id"]: e["tags"] for e in baseline.search()["results"]}
+    expected_kinds = baseline.get_entry(ENTRY_IDS[1])["attachments"]
+
+    db = sqlite3.connect(everlog_dir / "Hummingbird.sqlite")
+    db.execute("alter table Z_17TAGS rename to Z_30TAGS")
+    db.execute("alter table Z_30TAGS rename column Z_17ENTRIES1 to Z_30ENTRIES1")
+    db.execute("alter table Z_30TAGS rename column Z_25TAGS to Z_41TAGS")
+    for old, new in {3: 5, 6: 9, 8: 11, 13: 19, 17: 30, 25: 41}.items():
+        db.execute("update Z_PRIMARYKEY set Z_ENT = ? where Z_ENT = ?", (new + 100, old))
+        db.execute("update ZATTACHMENT set Z_ENT = ? where Z_ENT = ?", (new + 100, old))
+    db.execute("update Z_PRIMARYKEY set Z_ENT = Z_ENT - 100")
+    db.execute("update ZATTACHMENT set Z_ENT = Z_ENT - 100")
+    db.commit()
+    db.close()
+
+    shifted = EverlogStore(everlog_dir)
+    assert {e["entry_id"]: e["tags"] for e in shifted.search()["results"]} == expected_tags
+    assert shifted.get_entry(ENTRY_IDS[1])["attachments"] == expected_kinds
+    assert shifted.attachment_jpeg(A_IMG, 64)  # image entity resolved by name
+
+
+def test_timezone_follows_everlog_tz_env(everlog_dir):
+    code = ("from everlog_mcp.store import TZ; print(TZ.key)")
+    for value, expected in (("Europe/London", "Europe/London"), ("Not/AZone", None)):
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                             env={**os.environ, "EVERLOG_TZ": value})
+        assert out.returncode == 0, out.stderr
+        if expected:
+            assert out.stdout.strip() == expected
+        else:
+            assert "not a valid IANA timezone" in out.stderr

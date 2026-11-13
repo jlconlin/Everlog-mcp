@@ -13,7 +13,7 @@ from .store import EverlogError, EverlogStore, default_dir
 
 INSTRUCTIONS = """Read-only access to the user's private Everlog journal (macOS journaling app).
 - Entry ids come from search_entries / on_this_day; pass them to get_entry for the full text.
-- Dates are Everlog's own local days (America/Denver), formatted YYYY-MM-DD.
+- Dates are Everlog's own local days (in the local timezone; set EVERLOG_TZ to override), formatted YYYY-MM-DD.
 - search_entries uses SQLite FTS5 syntax: bare words are ANDed, "exact phrase", prefix*, OR, NOT, and
   stemming is on (run matches running). Omit `query` to browse by filter/date only.
 - get_entry shows attachments as placeholders like [image a1b2c3d4]; use get_attachment_image with the
@@ -133,7 +133,7 @@ def get_attachment_image(attachment_id: str, format: Literal["jpeg", "original"]
 @_tool
 def on_this_day(date: str | None = None, journal: str | None = None, limit: int = 50) -> dict[str, Any]:
     """Entries written on the same month/day in earlier years, newest first, with years_ago.
-    date: YYYY-MM-DD reference day (default: today in America/Denver); only years before it are included.
+    date: YYYY-MM-DD reference day (default: today in the local timezone); only years before it are included.
     Same result shape as search_entries."""
     return get_store().on_this_day(date, journal, limit)
 
