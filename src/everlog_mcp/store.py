@@ -10,7 +10,7 @@ import time
 from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import date as _date, datetime, timezone, tzinfo
+from datetime import date as _date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -67,6 +67,16 @@ def _ro(path: Path) -> sqlite3.Connection:
 
 def from_coredata(ts) -> datetime | None:
     return None if ts is None else datetime.fromtimestamp(ts + COREDATA_EPOCH, timezone.utc)
+
+
+def entry_zone(minutes) -> tzinfo:
+    """Fixed offset from ZENTRY.ZTIMEZONE (minutes east of UTC); falls back to the configured zone when missing."""
+    if minutes is None:
+        return TZ
+    try:
+        return timezone(timedelta(minutes=int(minutes)))
+    except (ValueError, OverflowError):
+        return TZ
 
 
 def local_iso(ts) -> str | None:
@@ -184,7 +194,7 @@ class WeatherRecord:
 @dataclass(frozen=True)
 class EntryRecord:
     id: str                    # ZIDENTIFIER
-    created: datetime          # exact ZDATE, tz-aware, local timezone (EVERLOG_TZ) (None-date rows get the epoch)
+    created: datetime          # exact ZDATE, tz-aware, in the entry's own ZTIMEZONE offset (EVERLOG_TZ if absent) (None-date rows get the epoch)
     modified: datetime | None
     journal: str
     text: str                  # raw markdown; ![attachment](<32-hex>) references intact
@@ -292,7 +302,7 @@ class EverlogStore:
             for r in db.execute("select * from ZENTRY where coalesce(ZISTRASHED,0)=0"):
                 text = r["ZTEXT"] or ""
                 local = from_coredata(r["ZDATE"])
-                local = local.astimezone(TZ) if local else None
+                local = local.astimezone(entry_zone(_col(r, "ZTIMEZONE"))) if local else None
                 ymd = r["ZYEARMONTHDAYID"] or (int(local.strftime("%Y%m%d")) if local else 0)
                 clean = ATTACHMENT_RE.sub("", text)
                 tr = transcripts.get(r["Z_PK"])
@@ -589,7 +599,7 @@ class EverlogStore:
         for r in rows:
             yield EntryRecord(
                 id=r["ZIDENTIFIER"] or "",
-                created=_local_dt(r["ZDATE"] or 0),
+                created=_local_dt(r["ZDATE"] or 0, entry_zone(_col(r, "ZTIMEZONE"))),
                 modified=_local_dt(r["ZDATEMODIFIED"]),
                 journal=journals.get(r["ZJOURNAL"], "Unfiled"),
                 text=r["ZTEXT"] or "",
@@ -672,9 +682,9 @@ def _attachment_info(a, kinds):
     return info
 
 
-def _local_dt(ts) -> datetime | None:
+def _local_dt(ts, zone: tzinfo | None = None) -> datetime | None:
     d = from_coredata(ts)
-    return d.astimezone(TZ) if d else None
+    return d.astimezone(zone or TZ) if d else None
 
 
 def _place_record(p) -> PlaceRecord | None:

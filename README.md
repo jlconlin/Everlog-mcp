@@ -14,7 +14,7 @@ A **read-only** [MCP](https://modelcontextprotocol.io) server for the [Everlog](
 | `on_this_day` | Entries from earlier years on the same month/day |
 | `journal_stats` | Entries and words per year or month |
 
-Dates are Everlog's own local days (local timezone; set `EVERLOG_TZ` to an IANA name such as `Europe/London` to override the system timezone), `YYYY-MM-DD`.
+Dates are Everlog's own local days (local timezone; set `EVERLOG_TZ` to an IANA name such as `Europe/London` to override the system timezone), `YYYY-MM-DD`. Entry `created` timestamps use each entry's own stored UTC offset (Everlog records it per entry, though older entries share a single fixed value), so they show the wall-clock time where the entry was written; other times use the local timezone.
 
 ## Install / run
 
@@ -74,6 +74,6 @@ Whatever the tools return (entry text, summaries, photos, locations) is sent to 
 
 `everlog_mcp.store` has no dependency on `mcp` or the server module, so other tools can import it directly. `EverlogStore(directory)` opens the data directory read-only; the methods below return raw, unshaped data (frozen dataclasses defined in `store.py`).
 
-- `store.iter_entries()` yields an `EntryRecord` for every non-trashed entry in chronological order (ZDATE, then pk). Fields: `id`, `created` and `modified` (tz-aware datetimes in the local timezone (`EVERLOG_TZ`)), `journal`, `text` (raw markdown, attachment references intact), `tags` (raw `Parent/Child` paths), `place` (`PlaceRecord` or None), `latitude`/`longitude`, `weather` (`WeatherRecord` or None, raw units), `bookmarked`, `pinned`, `word_count`, `year_month_day_id`, `attachments` (`AttachmentRecord` list in order).
+- `store.iter_entries()` yields an `EntryRecord` for every non-trashed entry in chronological order (ZDATE, then pk). Fields: `id`, `created` (tz-aware datetime in the entry's own stored UTC offset, `ZENTRY.ZTIMEZONE`; falls back to `EVERLOG_TZ`/system timezone if absent) and `modified` (tz-aware datetime in the local timezone (`EVERLOG_TZ`)), `journal`, `text` (raw markdown, attachment references intact), `tags` (raw `Parent/Child` paths), `place` (`PlaceRecord` or None), `latitude`/`longitude`, `weather` (`WeatherRecord` or None, raw units), `bookmarked`, `pinned`, `word_count`, `year_month_day_id`, `attachments` (`AttachmentRecord` list in order).
 - `store.attachment_bytes(identifier)` returns the raw bytes of an attachment (the largest copy if several rows share the identifier), or `None` if missing.
 - `store.journal_infos()` returns a list of `JournalInfo(name, hidden)`.

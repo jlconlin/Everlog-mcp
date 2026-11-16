@@ -303,3 +303,10 @@ def test_timezone_follows_everlog_tz_env(everlog_dir):
             assert out.stdout.strip() == expected
         else:
             assert "not a valid IANA timezone" in out.stderr
+
+
+def test_entry_zone_uses_stored_offset():
+    from everlog_mcp.store import TZ, _local_dt, entry_zone
+    assert _local_dt(0, entry_zone(-420)).isoformat().endswith("-07:00")
+    assert _local_dt(0, entry_zone(720)).isoformat().endswith("+12:00")
+    assert entry_zone(None) is TZ
